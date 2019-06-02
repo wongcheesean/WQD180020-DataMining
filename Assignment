@@ -1,0 +1,454 @@
+from bs4            import BeautifulSoup
+from glob import glob
+from inscriptis     import get_text
+from lxml           import html
+from lxml.html import fromstring
+from matplotlib.pylab import rcParams
+from nltk.corpus import stopwords
+from random import randint
+from re import compile
+from sklearn import tree
+from sklearn.decomposition import PCA
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier
+from urllib.request import urlopen
+import datetime as dt
+import graphviz
+import io
+import json
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import pandas as pd
+import pip
+import re
+import requests
+import seaborn as sns
+import time
+import urllib.request
+import urllib.request as Request
+
+#web scraping for stock market data
+page = urlopen('https://s3-ap-southeast-1.amazonaws.com/biz.thestar.com.my/layout_v2/stocks/stocklisting.js')
+source = page.read()
+soup = BeautifulSoup(source,'html.parser') # Parse the HTML as a string
+
+mk_row=[]
+mk_row.clear()
+
+no_of_row = len(soup.find_all('strong'))
+
+for row in range(no_of_row):
+    
+    #print(row) 
+    # Get row wise XML
+    v_row = soup.find_all('tr')[row]
+    # Convert into BeautifulSoup
+    get_row_wise_xml = BeautifulSoup(str(v_row),'lxml')
+
+    v_main_category = get_row_wise_xml.find_all('strong')
+    v_sub_category = get_row_wise_xml.find_all('p')
+   
+    for sub_cat_row in range(len(v_sub_category)):        
+       
+        v_sub_cat_url  = v_sub_category[sub_cat_row].find_all('a')
+    
+        mk_row.append([ str(v_main_category[0].text).replace(':','') ,
+                        v_sub_category[sub_cat_row].text,
+                        str(v_sub_cat_url[0]['id']).replace('\\"','')])
+df_main = pd.DataFrame(mk_row,columns=['Main_Category','Sub_Category','URL_Extension'])
+#https://s3-ap-southeast-1.amazonaws.com/biz.thestar.com.my/layout/stocks/data.js
+################### Reading the Child table to extract the company name ###############
+page = urlopen('https://s3-ap-southeast-1.amazonaws.com/biz.thestar.com.my/layout/stocks/data.js')
+source = page.read()
+soup = BeautifulSoup(source,'html.parser')
+v_js_string = str(soup)
+
+full_url=[]
+full_url.clear()
+
+# Reading dataFrameto get the full URL per URL_Extension
+for index, row in df_main.iterrows():
+    
+    # Split line based on URL_Extension and get the URL
+    for item in v_js_string.split("break"):
+        # Checking the line containing the URL extension
+        if row["URL_Extension"] in item:
+            full_url.append(re.findall('https.*js',item.strip())[0])
+            
+# Adding the full URL as column in DataFrame
+df_main['URL_for_Invidual']=full_url            
+mk_lst=[]
+mk_lst.clear()
+logdate = dt.datetime.now()
+
+
+for index, row in df_main.iterrows():
+    url = row['URL_for_Invidual']
+    html = Request.urlopen(url).read().decode('utf-8') 
+    
+    v_text = get_text(html)    
+    v_text = v_text.replace('var stockData = ','')
+    v_text = v_text.replace(';','')
+    js = json.loads(v_text)
+    
+    for i in range(sum(map(len, js.values()))):
+        
+        mk_lst.append ([index,
+                       js['Stocks'][i]['counter'],
+                       js['Stocks'][i]['open'],
+                       js['Stocks'][i]['high'],
+                       js['Stocks'][i]['low'],
+                       js['Stocks'][i]['lastdone'],
+                       js['Stocks'][i]['change'],
+                       js['Stocks'][i]['volume'],
+                       js['Stocks'][i]['percentchange'],
+                       js['Stocks'][i]['stockcode'],
+                       logdate
+                      ])
+
+df_daily_summary_per_comp_log = pd.DataFrame(mk_lst,columns=['fkey','symbol','open','high','low','lastdone','change','volume','percentchange','stockcode','logdate'])
+df_main.shape
+# Web Crawler class
+class AppCrawler:
+    
+    v_name         = ''
+    v_board        = ''
+    v_stock_code   = ''
+    v_52_week_high = ''
+    v_52_week_low  = ''
+    v_open         = ''
+    v_high         = ''
+    v_low          = ''
+    v_last         = ''
+    v_chg          = ''
+    v_chg_pct      = ''
+    v_Vol_00       = ''
+    v_buy_Vol_00   = ''
+    v_sell_Vol_00  = ''
+    v_update       = ''
+        
+    def __init__(self, starting_url, depth):
+        self.starting_url = starting_url
+        self.depth = depth
+        self.apps = []        
+
+    def crawl(self):
+        self.get_app_from_link(self.starting_url)
+        return
+
+    def get_app_from_link(self, link):
+        page = urlopen(link)
+        source = page.read()
+        soup = BeautifulSoup(source,'html.parser') 
+        
+        ################################# Decoding all the TAG ##########################
+        
+        AppCrawler.v_name         = soup.findAll(id = 'slcontent_0_ileft_0_compnametxt')[0].text
+
+        ##  Sample TAG for board, Stock Code, 52 week High, Low ##
+        #
+        # [<li class="f14"><span>Board</span> : Main</li>,
+        #  <li class="f14"><span>Stock Code</span> : 5218</li>,
+        #  <li class="f14"><span>52 Week High</span> : 0.910</li>,
+        #  <li class="f14"><span>52 Week Low</span> : 0.255</li>]
+
+        AppCrawler.v_board        = str(soup.findAll('li',{'class':"f14"})[0].text).rsplit(':')[1].strip()
+        AppCrawler.v_stock_code   = str(soup.findAll('li',{'class':"f14"})[1].text).rsplit(':')[1].strip()
+        AppCrawler.v_52_week_high = str(soup.findAll('li',{'class':"f14"})[2].text).rsplit(':')[1].strip()
+        AppCrawler.v_52_week_low  = str(soup.findAll('li',{'class':"f14"})[3].text).rsplit(':')[1].strip()
+
+        AppCrawler.v_open         = soup.findAll(id = 'slcontent_0_ileft_0_opentext')[0].text
+        AppCrawler.v_high         = soup.findAll(id = 'slcontent_0_ileft_0_hightext')[0].text
+        AppCrawler.v_low          = soup.findAll(id = 'slcontent_0_ileft_0_lowtext')[0].text
+        AppCrawler.v_last         = soup.findAll(id = 'slcontent_0_ileft_0_lastdonetext')[0].text
+        AppCrawler.v_chg          = soup.findAll(id = 'slcontent_0_ileft_0_chgtext')[0].text
+        AppCrawler.v_chg_pct      = soup.findAll(id = 'slcontent_0_ileft_0_chgpercenttrext')[0].text
+        AppCrawler.v_Vol_00       = soup.findAll(id = 'slcontent_0_ileft_0_voltext')[0].text
+        AppCrawler.v_buy_Vol_00   = soup.findAll(id = 'slcontent_0_ileft_0_buyvol')[0].text
+        AppCrawler.v_sell_Vol_00  = soup.findAll(id = 'slcontent_0_ileft_0_sellvol')[0].text
+        AppCrawler.v_update       = str(soup.findAll(id = 'slcontent_0_ileft_0_datetxt')[0].text).split(':')[1].strip().replace(' |','') \
+                                    + ' '\
+                                    + str(soup.findAll(id = 'slcontent_0_ileft_0_timetxt')[0].text)
+        return
+mk_list=[]
+mk_list.clear()
+logdate = dt.datetime.now()
+
+print('Running....')
+
+# Get number of rows in the source data frame
+no_of_record = df_daily_summary_per_comp_log.shape[0]
+
+for index, row in df_daily_summary_per_comp_log.iterrows():
+    
+    v_url = 'https://www.thestar.com.my/business/marketwatch/stocks/?qcounter='+row['symbol'] # symbol is the column name from dataframe
+    crawler = AppCrawler(v_url, 0)
+    crawler.crawl()
+    
+    mk_list.append([row['fkey'],
+                    row['symbol'],
+                    crawler.v_name,
+                    crawler.v_board,
+                    crawler.v_stock_code,
+                    crawler.v_52_week_high,
+                    crawler.v_52_week_low,
+                    crawler.v_open,
+                    crawler.v_high,
+                    crawler.v_low,
+                    crawler.v_last,
+                    crawler.v_chg,
+                    crawler.v_chg_pct,
+                    crawler.v_Vol_00,
+                    crawler.v_buy_Vol_00,
+                    crawler.v_sell_Vol_00,
+                    crawler.v_update,
+                    logdate
+                   ]                    
+                  )
+    
+    # Monitor the progress of the extraction
+    if np.mod(index,100)==0:
+        print(str(np.round(((index+1)/no_of_record)*100,2)) +'% Completed' )
+
+df_daily_extraction = pd.DataFrame(mk_list, columns=['fkey','symbol','name','board','stock_code','52_week_high','52_week_low','open','high','low','last','chg','chg_pct','Vol_00','buy_Vol_00','sell_Vol_00','update','logdate'])
+df_daily_extraction.to_csv('Extraction/Star_Online_Stock_'+'{0:%Y%m%d}'.format(dt.datetime.now())+'.csv',index=False,date_format='%Y-%m-%d %H:%M:%S')
+
+print('Done....')
+try:
+    for index,row in df_daily_summary_per_comp_log.iterrows():
+        if (len(row['stockcode'])==4):
+            req = Request.Request('https://klse.i3investor.com/servlets/stk/annqtyres/'+row['stockcode']+'.jsp', headers={'User-Agent': 'Mozilla/5.0'})
+            webpage = urlopen(req).read()
+            soup=[]
+            soup=BeautifulSoup(webpage,'html.parser')
+            data=[]
+            data.clear()
+            table=[]
+            table.clear()
+            rows=[]
+            rows.clear()
+            table=soup.find('tbody')
+            rows=table.find_all('tr')
+            for rows in rows:
+                cols=rows.find_all('td')
+                cols=[x.text.strip() for x in cols]
+                ann_date=cols[1]
+                quarter=cols[2]
+                revenue=cols[4]
+                pbt=cols[5]
+                np=cols[6]
+                np_to_sh=cols[7]
+                np_margin=cols[11]
+                roe=cols[12]
+                eps=cols[16]
+                dps=cols[18]
+                naps=cols[20]
+                qoq=cols[22]
+                yoy=cols[23]
+                data.append([row['stockcode'],row['symbol'],ann_date,quarter,revenue,pbt,np,np_to_sh,np_margin,roe,eps,dps,naps,qoq,yoy])
+                financial_info=pd.DataFrame(data,columns=['Stock_Code','Symbol','Annual_Date','Quarter_Date','Revenue','PBT','NP','NP_to_SH','NP_Margin','ROE','EPS','DPS','NAPS','Q0Q_Performance','YoY_performance'])
+                filename='C:/Users/laptop/Desktop/WebScraping_v1/Extraction_'+'{0:%Y%m%d}'.format(dt.datetime.now())+'.csv'
+            if os.path.exists(filename):
+                financial_info.to_csv(filename,header=False,mode='a',index=False)
+                print(row['stockcode'])
+        #header_exists = True
+            #with open(filename,'a') as csvfile:
+                #headers=['Stock_Code','Symbol','Annual_Date','Quarter_Date','Revenue','PBT','NP','NP_to_SH','NP_Margin','ROE','EPS','DPS','NAPS','Q0Q_Performance','YoY_performance']
+                #writer=csv.DictWriter(csvfile,delimiter=',',lineterminator='\n',fieldnames=headers)
+                #writer.writerow({financial_info['Stock_Code'],financial_info['Symbol'],financial_info['Annual_Date'],financial_info['Quarter_Date'],financial_info['Revenue'],financial_info['PBT'],financial_info['NP'],financial_info['NP_to_SH'],financial_info['NP_Margin'],financial_info['ROE'],financial_info['EPS'],financial_info['DPS'],financial_info['NAPS'],financial_info['Q0Q_Performance'],financial_info['YoY_performance']})
+                           
+            
+            else:
+                financial_info.to_csv(filename,index=False)
+                print(row['stockcode'])
+        else:
+            print('error on the'+row['stockcode'])
+            
+except AttributeError:
+    pass
+
+#Covariance
+df['ADVENTA'].var()
+df[['ADVENTA','AHEALTH','CCMDBIO','HARTA']].cov()
+df[['ADVENTA','AHEALTH','CCMDBIO','HARTA']].corr()
+
+#PCA
+features = ['WEEK1','WEEK2','WEEK3','WEEK4','WEEK5']
+# Separating out the features
+x = df.loc[:, features].values
+# Separating out the date
+y = df.loc[:,['NAME']].values
+# Standardizing the features
+x = StandardScaler().fit_transform(x)
+print(x)
+print(y)
+
+pca = PCA(n_components=2)
+principalComponents = pca.fit_transform(x)
+principalDf = pd.DataFrame(data = principalComponents
+             , columns = ['principal component 1', 'principal component 2'])
+
+print([principalDf])
+print(df[['NAME']])
+finalDf = pd.concat([principalDf, df[['NAME']]], axis = 1)
+print(finalDf)
+
+#plotting PCA graph
+fig = plt.figure(figsize = (10,10))
+ax = fig.add_subplot(1,1,1)
+ax.set_xlabel('Principal Component 1', fontsize = 15)
+ax.set_ylabel('Principal Component 2', fontsize = 15)
+ax.set_title('2 component PCA', fontsize = 20)
+targets = ['ADVENTA','AHEALTH','CCMDBIO','HARTA']
+colors = ['r', 'g', 'b','y']
+for name, color in zip(targets,colors):
+    indicesToKeep = finalDf['NAME'] == name
+    ax.scatter(finalDf.loc[indicesToKeep, 'principal component 1']
+               , finalDf.loc[indicesToKeep, 'principal component 2']
+               , c = color
+               , s = 50)
+ax.legend(targets)
+ax.grid()
+print(pca.explained_variance_ratio_)
+
+#after transformation of data from row to columns
+df = pd.read_csv('gloves.csv', index_col ='date')
+df['adventa_day_chg'] = (df['adventa_last'].pct_change())*100
+df['supermax_day_chg'] = (df['supermax_last'].pct_change())*100
+df['topglove_day_chg'] = (df['topglove_last'].pct_change())*100
+np.argmax(df['adventa_day_chg'])
+
+dcriteria = (df.index >= '23-02-19') & (df.index <= '29-03-19')
+t_adventa_criteria = df['adventa_day_chg'] < -1
+t_supermax_criteria = df['supermax_day_chg'] < -1
+t_topglove_criteria = df['topglove_day_chg'] < -1
+
+adventa_criteria = (dcriteria) & (t_adventa_criteria)
+supermax_criteria = (dcriteria) & (t_supermax_criteria)
+topglove_criteria = (dcriteria) & (t_topglove_criteria)
+
+stocks_last = pd.DataFrame({"AD_last": df["adventa_last"],
+                            "SM_last": df["supermax_last"],
+                            "TG_last": df["topglove_last"]})
+stocks_last.plot(grid=True)
+
+stocks_last.plot(secondary_y = ["AD_last", "TG_last"], grid = True)
+
+stock_return = stocks_last.apply(lambda x: x / x[0])
+stock_return.head() - 1
+stock_return.plot(grid = True).axhline(y = 1, color = "black", lw = 2)
+
+corr = df[['adventa_last','supermax_last','topglove_last']].corr()
+print(corr)
+stock_change = stocks_last.apply(lambda x: np.log(x) - np.log(x.shift(1))) # shift moves dates back by 1.
+stock_change.head()
+stock_change.plot(grid = True).axhline(y = 0, color = "black", lw = 2)
+
+page1 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=PGzFXInlHbC91fAPzPme2AU&start=0&sa=N&ved=0ahUKEwiJ87f2tvLhAhWwXhUIHcy8B1s4FBDy0wMITA&biw=1366&bih=625&dpr=1"
+page2 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=8WzFXM_AG8KY1fAP-fm8mAs&start=10&sa=N&ved=0ahUKEwiP_dzMt_LhAhVCTBUIHfk8D7MQ8tMDCE4&biw=1366&bih=625&dpr=1"
+page3 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=F23FXI3PKvWh1fAP9ue5qAc&start=20&sa=N&ved=0ahUKEwjNtvvet_LhAhX1UBUIHfZzDnU4ChDy0wMITw&biw=1366&bih=625&dpr=1"
+page4 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=H23FXPzUDbHHxgOon75Q&start=30&sa=N&ved=0ahUKEwi84Mbit_LhAhWxo3EKHaiPDwo4FBDy0wMIUQ&biw=1366&bih=625&dpr=1"
+page5 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=Jm3FXMLJMKOo1fAP6Jmq8As&start=40&sa=N&ved=0ahUKEwjC9JTmt_LhAhUjVBUIHeiMCr44HhDy0wMIUQ&biw=1366&bih=625&dpr=1"
+page6 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=LW3FXNSVIJSo1fAP-pSooAM&start=50&sa=N&ved=0ahUKEwiU4K_pt_LhAhUUVBUIHXoKCjQ4KBDy0wMIUA&biw=1366&bih=625&dpr=1"
+page7 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=mXfFXKqOI8HmvgSttYBw&start=60&sa=N&ved=0ahUKEwjqvszhwfLhAhVBs48KHa0aAA44MhDy0wMIVA&biw=1366&bih=625&dpr=1"
+page8 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=u3fFXPelOcvUvATf5Kb4Aw&start=70&sa=N&ved=0ahUKEwi37_3xwfLhAhVLKo8KHV-yCT84PBDy0wMIVA&biw=1366&bih=625&dpr=1"
+page9 = "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=wnfFXL_bPITtvgSPpYz4Cw&start=80&sa=N&ved=0ahUKEwi_xKz1wfLhAhWEto8KHY8SA784RhDy0wMIWg&biw=1366&bih=625&dpr=1"
+page10= "https://www.google.co.uk/search?q=%22rubber+gloves%22&tbm=nws&ei=yXfFXN_jMcXJvgT2qb2gBw&start=90&sa=N&ved=0ahUKEwif7Mz4wfLhAhXFpI8KHfZUD3Q4UBDy0wMIWw&biw=1366&bih=625&dpr=1"
+Page = [page1,page2,page3,page4,page5,page6,page7,page8,page9,page10];
+
+for i in Page:
+    def scrape_news_summaries(s):
+        time.sleep(randint(0, 2)) 
+        r = requests.get(i)
+        content = r.text
+        news_summaries = []
+        soup = BeautifulSoup(content, "html.parser")
+        st_divs = soup.findAll("div", {"class": "st"})
+        for st_div in st_divs:
+            news_summaries.append(st_div.text)
+        return news_summaries
+    l = scrape_news_summaries("gloves")
+    for n in l:
+        f = io.open("C:/Users/laptop/Desktop/glove_news.txt", "a", encoding="utf-8") 
+        f.write(n + '\n')                           # Write inside file 
+        f.close()                                # Close file 
+return
+
+news = pd.read_fwf('glove_news.txt')
+def lineIndex(news):
+    d = {}
+    with io.open(news, 'r', encoding="utf-8") as f:       
+        content = f.readlines()
+        lnc = 0
+        result = {}
+        for line in content:
+            line = line.rstrip()
+            words = line.split(" ")
+            for word in words:
+                tmp = result.get(word)
+                if tmp is None:
+                    result[word] = []
+                if lnc not in result[word]:
+                    result[word].append(lnc)
+            lnc = lnc + 1
+        return result
+news.head()
+
+#preprocessing of text before sentiment analysis
+import nltk
+from textblob import TextBlob
+from textblob import Word
+from nltk.stem import PorterStemmer
+nltk.download('stopwords')
+nltk.download('punkt')
+nltk.download('wordnet')
+title = 'ï»¿title'
+news[title] = news[title].apply(lambda x: " ".join(x.lower() for x in x.split())) #to lower case
+news[title] = news[title].str.replace('[^\w\s]','') #to remove punctuation
+
+stop = stopwords.words('english')
+news[title] = news[title].apply(lambda x: " ".join(x for x in x.split() if x not in stop)) #stopwords
+news[title].head()
+
+freq = pd.Series(' '.join(news[title]).split()).value_counts()[:10]
+freq
+newsTextBlob(news[title][1]).words #tokenization to separate words
+st = PorterStemmer()
+news[title][:5].apply(lambda x: " ".join([st.stem(word) for word in x.split()])) #stemming to remove -ing -ly
+news[title] = news[title].apply(lambda x: " ".join([Word(word).lemmatize() for word in x.split()])) #lemmatization
+news[title][:5].apply(lambda x: TextBlob(x).sentiment) #sentiment analysis
+news['sentiment'] = news[title].apply(lambda x: TextBlob(x).sentiment[0] )
+
+#Decision tree
+df = pd.read_csv('adventa_stock.csv', index_col = 'date')
+
+df['ClgtEMA'] = np.where(df['adventa_last'] > df['EMA'], 1, -1)
+df['MACDSIGgtMACD'] = np.where(df['MACD Signal'] > df['MACD'], 1, -1)
+
+predictors_list = ["ATR","ADX","RSI","ClgtEMA","MACDSIGgtMACD"]
+x = df[predictors_list]
+
+y_cls = df.adventa_chg_ind
+
+y = y_cls
+x_cls_train, x_cls_test, y_cls_train, y_cls_test = train_test_split(x, y, test_size=0.5, random_state=123, stratify=y)
+
+clf = DecisionTreeClassifier(criterion='gini', max_depth=3, min_samples_leaf=6)
+clf = clf.fit(x_cls_train, y_cls_train)
+
+os.environ['PATH'] += os.pathsep + 'C:/ProgramData/Anaconda3/Library/bin/graphviz'
+dot_data = tree.export_graphviz(clf, out_file=None,filled=True,feature_names=predictors_list)
+graphviz.Source(dot_data)
+
+#print classification report
+y_cls_pred = clf.predict(x_cls_test)
+report = classification_report(y_cls_test, y_cls_pred)
+print(report)
+
+#print confusion matrix
+print(confusion_matrix(y_cls_test, y_cls_pred))
+
